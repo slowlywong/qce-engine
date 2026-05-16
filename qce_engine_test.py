@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 QCE Engine Test - สามารถรันใน VS Code ได้เลย
-ไม่ต้องใช้ Streamlit
+ไม่ต้องใช้ Streamlit - สมบูรณ์ทั้งหมด โดยไม่ตัดรายละเอียดสำคัญ
 """
 import hashlib
 import numpy as np
 
-# QCE ENGINE CORE
-THAI_LOWER = lambda s: s
+# QCE ENGINE CORE (Rule-based, text-derived)
+THAI_LOWER = lambda s: s  # Thai has no case; keep original for matching substrings
 
 HEDGES = set([
     'อาจ','น่าจะ','เหมือน','คิดว่า','คง','ลอง','ถ้า','หรือเปล่า','ไหม','หรือไม่','บางที',
@@ -16,30 +16,30 @@ HEDGES = set([
 ])
 
 ASSERTIVES = set([
-    'ฉันรู้','รู้','พร้อม','ชัดเจน','แน่ชัด','ตั้งใจ','ต้องการ','ยืนยัน','แน่นอน',
+    'ฉันรู้','รู้','พร้อม','ชัดเจน','แน่ชัด','ตั้งใจ','ต้องการ','ยืนยัน','แน่นอน','ขออนุญาต',
     'i know','know','ready','clearly','definitely','certainly','intend','intention','want','confirm','agree'
 ])
 
 NEG_CONFLICT = set([
-    'ไม่แน่ใจ','ไม่มั่นใจ','ไม่ชัดเจน','ไม่พร้อม','ลังเล','สับสน','กลัว','กังวล',
-    'unsure','uncertain','confused','afraid','worried','conflicted'
+    'ไม่แน่ใจ','ไม่มั่นใจ','ไม่ชัดเจน','ไม่พร้อม','ลังเล','สับสน','กลัว','กังวล','ขัดแย้ง',
+    'unsure','uncertain','confused','afraid','worried','conflicted','doubt'
 ])
 
 THETA_TOKENS = set([
-    'นิ่ง','แก่น','เป็นหนึ่งเดียว','วงกลม','ภายใน','สภาวะ','ความหมาย','เงียบ',
-    'core','essence','circle','within','state','meaning','silence','intuitive'
+    'นิ่ง','แก่น','เป็นหนึ่งเดียว','วงกลม','ภายใน','สภาวะ','ความหมาย','เงียบ','รู้โดยสัญชาตญาณ',
+    'core','essence','circle','within','state','meaning','silence','intuitive','fundamental'
 ])
 
 GAMMA_TOKENS = set([
-    'พร้อม','ยืนยัน','ตกลง','เริ่ม','ทำเลย','ขอ','รับรอง','ตรง','พุ่ง','รู้ทันที',
-    'ready','confirm','agree','start','do','request','ensure','direct','surge','instant'
+    'พร้อม','ยืนยัน','ตกลง','เริ่ม','ทำเลย','ขอ','รับรอง','ตรง','พุ่ง','รู้ทันที','เดี๋ยวนี้',
+    'ready','confirm','agree','start','do','request','ensure','direct','surge','instant','now'
 ])
 
 ALPHA_TOKENS = set(['สงบ','เบา','สบาย','นิ่งๆ','ช้า','ผ่อน','calm','light','comfortable','slow','relax'])
-BETA_TOKENS = set(['เพราะ','ดังนั้น','เหตุผล','วิเคราะห์','ตรรกะ','โครงสร้าง','ขั้นตอน',
-    'because','therefore','reason','analyze','logic','structure','step'])
-DELTA_TOKENS = set(['พัก','ล้า','เหนื่อย','เจ็บ','ช้า','ฟื้น','หลับ','หยุดพัก',
-    'rest','tired','exhausted','pain','slow','recover','sleep','pause'])
+BETA_TOKENS = set(['เพราะ','ดังนั้น','เหตุผล','วิเคราะห์','ตรรกะ','โครงสร้าง','ขั้นตอน','ข้อเท็จจริง',
+    'because','therefore','reason','analyze','logic','structure','step','fact'])
+DELTA_TOKENS = set(['พัก','ล้า','เหนื่อย','เจ็บ','ช้า','ฟื้น','หลับ','หยุดพัก','ผ่อน',
+    'rest','tired','exhausted','pain','slow','recover','sleep','pause','relax'])
 
 WAVE_MULTIPLIER = {
     'alpha': 1.00,
@@ -54,10 +54,12 @@ def contains_any(text: str, vocab: set) -> bool:
 
 def qce_read(texts, debug=False):
     """
-    QCE reading from conversational snippets
+    QCE reading from short conversational snippets (1–3 lines).
+    texts: list[str] — last 1–3 lines (e.g., assistant line + user line)
+    returns: dict with intent, discordance, waves, consent_score, status, reasons
     """
     raw = '\n'.join([t.strip() for t in texts if t and t.strip()])
-    text = THAI_LOWER(raw).lower()
+    text = THAI_LOWER(raw)
 
     # Feature flags
     f = {
@@ -71,9 +73,9 @@ def qce_read(texts, debug=False):
         'has_delta': contains_any(text, DELTA_TOKENS),
     }
 
-    # Structural signals
+    # Additional structural signals
     char_len = len(text)
-    short_utterance = char_len <= 30
+    short_utterance = char_len <= 30  # short & sharp → gamma assist
     very_short = char_len <= 15
 
     # Intent estimation (0..1)
@@ -89,14 +91,16 @@ def qce_read(texts, debug=False):
     if very_short and f['has_gamma']: intent += 0.03
     intent = max(0.0, min(1.0, intent))
 
-    # Discordance estimation (0..1)
+    # Discordance estimation (0..1) — lower is better
     discord = 0.30
     if f['has_hedge']: discord += 0.20
     if f['has_neg_conflict']: discord += 0.25
     if f['has_assertive']: discord -= 0.15
     if f['has_theta']: discord -= 0.12
+    if 'ไม่ต้องพูด' in text: discord -= 0.08
     if f['has_beta'] and not f['has_theta'] and not f['has_gamma']:
-        discord += 0.05
+        discord += 0.05  # over-analysis without core
+    # Clamp
     discord = max(0.0, min(1.0, discord))
 
     # Wave scoring
@@ -113,16 +117,18 @@ def qce_read(texts, debug=False):
     if f['has_gamma']: wave_scores['gamma'] += 0.7
     if f['has_delta']: wave_scores['delta'] += 0.6
 
+    # Short & sharp boosts gamma; metaphor/abstraction boosts theta
     if short_utterance: wave_scores['gamma'] += 0.1
-    if contains_any(text, set(['วงกลม','แก่น','สภาวะ','หนึ่งเดียว','เงียบ','core','essence'])):
+    if contains_any(text, set(['วงกลม','แก่น','สภาวะ','หนึ่งเดียว','เงียบ'])):
         wave_scores['theta'] += 0.1
 
-    # Pick present waves
+    # Pick present waves = scores >= 0.6 (allow multiple)
     present_waves = [w for w,s in wave_scores.items() if s >= 0.6]
     if not present_waves:
+        # default to alpha (calm) if none detected
         present_waves = ['alpha']
 
-    # Wave multiplier
+    # Wave multiplier = average if multiple
     wm = float(np.mean([WAVE_MULTIPLIER[w] for w in present_waves]))
 
     # Consent score
@@ -138,24 +144,24 @@ def qce_read(texts, debug=False):
     else:
         status = 'Consent Denied'
 
-    # Reasons
+    # Reasons (Explainability)
     reasons = []
     if f['has_assertive']:
-        reasons.append('Signal: Assertive/Intentional → Boost Intent')
+        reasons.append('พบสัญญาณยืนยัน/ตั้งใจ → หนุน Intent')
     if f['has_hedge']:
-        reasons.append('Signal: Hedging/Conditional → Increase Discordance')
+        reasons.append('พบถ้อยคำลังเล/เงื่อนไข → เพิ่ม Discordance')
     if f['has_neg_conflict']:
-        reasons.append('Signal: Uncertainty/Conflict detected')
+        reasons.append('พบสัญญาณความไม่มั่นใจ/ตีกันภายใน')
     if f['has_theta']:
-        reasons.append('Token: Core/State → Classify THETA')
+        reasons.append('ถ้อยคำชี้แก่น/สภาวะ → จัดเป็น THETA')
     if f['has_gamma'] or short_utterance:
-        reasons.append('Token: Sharp/Short → Classify GAMMA')
+        reasons.append('ถ้อยคำคม/สั้น/ประกาศสภาวะ → จัดเป็น GAMMA')
     if f['has_alpha']:
-        reasons.append('Tone: Calm/Relaxed → Support ALPHA')
+        reasons.append('โทนสงบ/สบาย → สนับสนุน ALPHA')
     if f['has_beta']:
-        reasons.append('Signal: Logical/Analytical → Support BETA')
+        reasons.append('การอธิบายเชิงเหตุผล → สนับสนุน BETA')
 
-    # Hash
+    # Hash for privacy-preserving logging
     input_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
 
     result = {
@@ -213,6 +219,16 @@ if __name__ == '__main__':
         print(f"\n💡 REASONS:")
         for reason in result['reasons']:
             print(f"  • {reason}")
+        
+        if result.get('wave_scores'):
+            print(f"\n📈 WAVE SCORES (Debug):")
+            for wave, score in result['wave_scores'].items():
+                print(f"  {wave.upper():8} : {score:.2f}")
+        
+        if result.get('features'):
+            print(f"\n🔍 FEATURE FLAGS (Debug):")
+            for feature, flag in result['features'].items():
+                print(f"  {feature:18} : {flag}")
     
     print(f"\n{'=' * 70}")
     print("Test Complete!")
